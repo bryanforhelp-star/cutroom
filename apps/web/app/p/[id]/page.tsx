@@ -338,17 +338,21 @@ export default function Editor() {
           <span className="proj-name">{project.name}</span>
         </div>
         <div className="row">
-          {words && (
+          {editorReady && words && (
             <span className="duration">
               {fmtTime(kept)}<s>{fmtTime(total)}</s>
             </span>
           )}
-          <button className="ghost" onClick={undo} disabled={!history.current.length}>
-            undo
-          </button>
-          <button onClick={exportCut} disabled={!!rendering || clips.length === 0 || !words}>
-            {rendering ? "rendering…" : "export"}
-          </button>
+          {editorReady && (
+            <>
+              <button className="ghost" onClick={undo} disabled={!history.current.length}>
+                undo
+              </button>
+              <button onClick={exportCut} disabled={!!rendering || clips.length === 0 || !words}>
+                {rendering ? "rendering…" : "export"}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
