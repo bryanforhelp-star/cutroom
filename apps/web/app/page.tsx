@@ -27,7 +27,7 @@ function createDemoProject(name: string): Project {
   const project = {
     id,
     name,
-    status: "ready",
+    status: "created",
     created_at: new Date().toISOString(),
   };
   saveDemoProject(project);

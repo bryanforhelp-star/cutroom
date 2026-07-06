@@ -9,9 +9,13 @@ const TUS_THRESHOLD = 6 * 1024 * 1024; // resumable upload above 6MB
 export default function UploadDropzone({
   projectId,
   onDone,
+  demoMode = false,
+  onDemoUpload,
 }: {
   projectId: string;
   onDone: () => void;
+  demoMode?: boolean;
+  onDemoUpload?: (file: File, objectUrl: string) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<number | null>(null);
@@ -21,6 +25,14 @@ export default function UploadDropzone({
   async function handleFile(file: File) {
     setError(null);
     setProgress(0);
+
+    if (demoMode) {
+      const objectUrl = URL.createObjectURL(file);
+      setProgress(100);
+      onDemoUpload?.(file, objectUrl);
+      return;
+    }
+
     const ext = file.name.split(".").pop()?.toLowerCase() || "mp4";
     const path = `${projectId}/source.${ext}`;
 
@@ -116,7 +128,12 @@ export default function UploadDropzone({
         }}
       >
         {progress === null ? (
-          <>drop your talking-head clip here, or click to pick one</>
+          <>
+            <strong>Drop a video to start</strong>
+            <span>or click to choose a file</span>
+          </>
+        ) : demoMode && progress === 100 ? (
+          <>video loaded — opening editor…</>
         ) : (
           <>uploading… {progress}%</>
         )}

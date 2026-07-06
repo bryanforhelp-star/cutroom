@@ -11,7 +11,6 @@ type AIPanelProps = {
   clips: Clip[];
   scriptSections: ScriptSection[];
   onRunCommands: (commands: EditCommand[]) => void;
-  onScriptDraftChange: (value: string) => void;
 };
 
 type Message = { role: "user" | "ai"; text: string };
@@ -23,7 +22,6 @@ export default function AIPanel({
   clips,
   scriptSections,
   onRunCommands,
-  onScriptDraftChange,
 }: AIPanelProps) {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -61,15 +59,10 @@ export default function AIPanel({
   return (
     <div className="ai-panel card">
       <div className="timeline-head">
-        <span>ai editor</span>
-        <span className="hint">just does it</span>
+        <span>AI editor</span>
+        <span className="hint">tell it what cut to make</span>
       </div>
-      <textarea
-        value={scriptDraft}
-        onChange={(e) => onScriptDraftChange(e.target.value)}
-        placeholder={"script/order\nhook: ...\nproof: ...\ncta: ..."}
-        rows={4}
-      />
+      <p className="hint ai-help">Try: “remove filler words”, “make this punchier”, “add a zoom on the hook”, or open Match Script to paste a script and assemble from it.</p>
       {!!scriptSections.length && (
         <div className="script-sections">
           {scriptSections.map((s) => <span key={s.id} className="section-chip">{s.label} · {(s.score * 100).toFixed(0)}%</span>)}
@@ -82,7 +75,7 @@ export default function AIPanel({
         <input
           type="text"
           value={input}
-          placeholder="message"
+          placeholder="Tell AI what to do with this video…"
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send()}
         />

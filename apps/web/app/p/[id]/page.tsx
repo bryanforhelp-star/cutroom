@@ -71,6 +71,8 @@ export default function Editor() {
   const [job, setJob] = useState<Job | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [demoFileName, setDemoFileName] = useState<string | null>(null);
+  const [showScriptMatch, setShowScriptMatch] = useState(false);
   const [seek, setSeek] = useState<{ t: number; nonce: number } | null>(null);
   const [playT, setPlayT] = useState(0);
   const [scriptDraft, setScriptDraft] = useState("");
@@ -118,18 +120,18 @@ export default function Editor() {
 
   const load = useCallback(async () => {
     if (id?.startsWith("demo-")) {
-      const demoWords = DEMO_WORDS;
       setProject({
         id,
         name: demoProjectName(id),
-        status: "ready",
+        status: "created",
         orientation: "landscape",
         source_asset_id: null,
         error: null,
       });
-      setWords(demoWords);
-      setEditState((prev) => prev?.sourceWords.length === demoWords.length ? prev : createInitialEditState(demoWords));
+      setWords(null);
+      setEditState(null);
       setVideoUrl(null);
+      setDemoFileName(null);
       return;
     }
 
@@ -271,6 +273,16 @@ export default function Editor() {
     setSeek({ t: words[i].start, nonce: Date.now() });
   }
 
+  function openDemoEditor(file: File, objectUrl: string) {
+    const demoWords = DEMO_WORDS;
+    setDemoFileName(file.name);
+    setVideoUrl(objectUrl);
+    setWords(demoWords);
+    setEditState(createInitialEditState(demoWords));
+    setProject((prev) => prev ? { ...prev, status: "ready" } : prev);
+    setShowScriptMatch(false);
+  }
+
   async function exportCut() {
     if (!words || !project) return;
     if (project.id.startsWith("demo-")) {
@@ -315,6 +327,8 @@ export default function Editor() {
   const kept = keptDuration(clips);
   const total = words?.length ? words[words.length - 1].end : 0;
   const rendering = job && job.status !== "done" && job.status !== "error";
+  const isDemoProject = project.id.startsWith("demo-");
+  const editorReady = project.status === "ready" && words && editState;
 
   return (
     <main className={project.status === "ready" ? "wrap wide" : "wrap"}>
@@ -339,10 +353,20 @@ export default function Editor() {
       </div>
 
       {project.status === "created" && (
-        <>
-          <p className="sub" style={{ marginTop: 24 }}>no source yet.</p>
-          <UploadDropzone projectId={project.id} onDone={load} />
-        </>
+        <section className="upload-stage">
+          <p className="eyebrow">step 1</p>
+          <h1 className="h1">Upload a video to start editing</h1>
+          <p className="sub">Cutroom starts like a normal editor: drop in the clip first, then the transcript, timeline, AI controls, and Match Script tools appear.</p>
+          <UploadDropzone
+            projectId={project.id}
+            onDone={load}
+            demoMode={isDemoProject}
+            onDemoUpload={openDemoEditor}
+          />
+          {isDemoProject && (
+            <p className="notice">Temporary prototype mode: your video loads in-browser so you can test the editor flow while the permanent Supabase/Vercel connection is being opened up.</p>
+          )}
+        </section>
       )}
 
       {project.status === "transcribing" && (
@@ -357,40 +381,60 @@ export default function Editor() {
         </div>
       )}
 
-      {project.status === "ready" && words && editState && (
+      {editorReady && (
         <>
+          <div className="editor-intro">
+            <div>
+              <p className="eyebrow">editor</p>
+              <h1 className="h1">Edit the video by editing the transcript.</h1>
+              <p className="sub">Highlight transcript words and press delete to cut them. Use the timeline for precise ranges, or tell AI what to do with the loaded clip.</p>
+            </div>
+            {demoFileName && <span className="status ok">loaded: {demoFileName}</span>}
+          </div>
           <div className="editor-grid">
             <section className="doc-col">
-              <ScriptMatch
-                words={words}
-                onApply={(r) => commitRemoved(r)}
-                onUndo={undo}
-                canUndo={history.current.length > 0}
-              />
-              <div className="script-assembly card">
+              <div className="editor-tools card">
                 <div className="timeline-head">
-                  <span>script order</span>
-                  <button className="small" disabled={!scriptDraft.trim()} onClick={() => runCommand({ type: "assemble_from_script", script: scriptDraft })}>find + assemble</button>
+                  <span>Transcript tools</span>
+                  <button className="small" onClick={() => setShowScriptMatch((v) => !v)}>
+                    {showScriptMatch ? "hide match script" : "match script"}
+                  </button>
                 </div>
-                <textarea
-                  value={scriptDraft}
-                  onChange={(e) => setScriptDraft(e.target.value)}
-                  placeholder={"hook: paste the first beat\nproof: paste the proof beat\ncta: paste the ending"}
-                  rows={4}
-                />
-                {!!editState.scriptSections.length && (
-                  <div className="script-sections">
-                    {editState.scriptSections.map((s) => (
-                      <button key={s.id} className="ghost small" onClick={() => setSeek({ t: words[s.wordStartIndex].start, nonce: Date.now() })}>
-                        {s.label} · {(s.score * 100).toFixed(0)}%
-                      </button>
-                    ))}
+                <div className="ai-command-bar">
+                  <button className="ghost small" onClick={() => runCommand({ type: "remove_fillers" })}>remove fillers</button>
+                  <button className="ghost small" onClick={() => clips[0] && runCommand({ type: "add_transition", afterClipId: clips[0].id, transition: "crossfade", duration: 0.18 })}>add transition</button>
+                </div>
+                {showScriptMatch && (
+                  <div className="match-script-mode">
+                    <ScriptMatch
+                      words={words}
+                      onApply={(r) => commitRemoved(r)}
+                      onUndo={undo}
+                      canUndo={history.current.length > 0}
+                    />
+                    <div className="script-assembly">
+                      <div className="timeline-head">
+                        <span>Paste script order</span>
+                        <button className="small" disabled={!scriptDraft.trim()} onClick={() => runCommand({ type: "assemble_from_script", script: scriptDraft })}>find + assemble</button>
+                      </div>
+                      <textarea
+                        value={scriptDraft}
+                        onChange={(e) => setScriptDraft(e.target.value)}
+                        placeholder={"hook: paste the first beat\nproof: paste the proof beat\ncta: paste the ending"}
+                        rows={4}
+                      />
+                      {!!editState.scriptSections.length && (
+                        <div className="script-sections">
+                          {editState.scriptSections.map((s) => (
+                            <button key={s.id} className="ghost small" onClick={() => setSeek({ t: words[s.wordStartIndex].start, nonce: Date.now() })}>
+                              {s.label} · {(s.score * 100).toFixed(0)}%
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
-              </div>
-              <div className="ai-command-bar">
-                <button className="ghost small" onClick={() => runCommand({ type: "remove_fillers" })}>ai: remove fillers</button>
-                <button className="ghost small" onClick={() => clips[0] && runCommand({ type: "add_transition", afterClipId: clips[0].id, transition: "crossfade", duration: 0.18 })}>ai: add transition</button>
               </div>
               <div className="transcript">
                 {paragraphs.map((para, pi) => (
@@ -425,7 +469,6 @@ export default function Editor() {
                 clips={clips}
                 scriptSections={editState.scriptSections}
                 onRunCommands={runCommands}
-                onScriptDraftChange={setScriptDraft}
               />
               {videoUrl ? (
                 <Player src={videoUrl} clips={clips} seek={seek} onTime={setPlayT} />
