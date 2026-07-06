@@ -24,11 +24,25 @@ export default function Editor() {
   const [removed, setRemoved] = useState<Set<number>>(new Set());
   const [job, setJob] = useState<Job | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [playhead, setPlayhead] = useState(0);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const lastClicked = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     const { data: p } = await supabase.from("projects").select("*").eq("id", id).single();
     setProject(p);
+    if (p?.source_asset_id) {
+      const { data: asset } = await supabase
+        .from("assets")
+        .select("storage_path")
+        .eq("id", p.source_asset_id)
+        .single();
+      if (asset?.storage_path) {
+        const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrl(asset.storage_path, 3600);
+        setVideoUrl(signed?.signedUrl ?? null);
+      }
+    }
     if (p?.status === "ready" || p?.status === "error") {
       const { data: t } = await supabase
         .from("transcripts")
@@ -70,6 +84,7 @@ export default function Editor() {
   }, [job]);
 
   function toggleWord(i: number, shift: boolean) {
+    if (!shift && videoRef.current) videoRef.current.currentTime = words?.[i]?.start ?? videoRef.current.currentTime;
     setRemoved((prev) => {
       const next = new Set(prev);
       if (shift && lastClicked.current !== null) {
@@ -82,6 +97,28 @@ export default function Editor() {
       lastClicked.current = i;
       return next;
     });
+  }
+
+  function onPreviewTimeUpdate() {
+    const video = videoRef.current;
+    if (!video || !clips.length) return;
+    const t = video.currentTime;
+    setPlayhead(t);
+    const inside = clips.find((c) => t >= c.in && t <= c.out);
+    if (!inside && !video.paused) {
+      const next = clips.find((c) => c.in > t);
+      if (next) video.currentTime = next.in;
+      else video.pause();
+    }
+  }
+
+  function currentWordIndex() {
+    if (!words) return -1;
+    return words.findIndex((w) => playhead >= w.start && playhead <= w.end);
+  }
+
+  function seekToStart() {
+    if (videoRef.current && clips.length) videoRef.current.currentTime = clips[0].in;
   }
 
   async function exportCut() {
@@ -116,6 +153,7 @@ export default function Editor() {
   if (!project) return <main className="wrap"><span className="status">loading…</span></main>;
 
   const clips = words ? buildClipsFromWords(words, removed) : [];
+  const activeWord = currentWordIndex();
   const kept = keptDuration(clips);
   const total = words?.length ? words[words.length - 1].end : 0;
   const rendering = job && job.status !== "done" && job.status !== "error";
@@ -165,20 +203,46 @@ export default function Editor() {
             </div>
           </div>
 
-          <p className="hint" style={{ margin: "12px 0" }}>
-            click a word to cut it. shift-click to cut a range. struck words are removed from the export.
-          </p>
+          <div className="editor-grid">
+            <section className="preview-panel">
+              {videoUrl ? (
+                <>
+                  <video
+                    ref={videoRef}
+                    src={videoUrl}
+                    controls
+                    playsInline
+                    onTimeUpdate={onPreviewTimeUpdate}
+                    onPlay={seekToStart}
+                  />
+                  <div className="preview-meta">
+                    <span className="status">preview skips struck words</span>
+                    <span className="duration">{fmtTime(playhead)} / {fmtTime(kept)}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="preview-empty">source preview loading…</div>
+              )}
+            </section>
 
-          <div className="transcript">
-            {words.map((w, i) => (
-              <span
-                key={i}
-                className={`word ${removed.has(i) ? "removed" : ""}`}
-                onClick={(e) => toggleWord(i, e.shiftKey)}
-              >
-                {w.word}{" "}
-              </span>
-            ))}
+            <section className="transcript-panel">
+              <p className="hint" style={{ margin: "0 0 12px" }}>
+                click a word to cut it. shift-click to cut a range. press play to watch the cut.
+              </p>
+              <div className="transcript">
+                {words.map((w, i) => (
+                  <span key={i}>
+                    {i > 0 && w.start - words[i - 1].end > 1.2 && <><br /><br /></>}
+                    <span
+                      className={`word ${removed.has(i) ? "removed" : ""} ${activeWord === i ? "playing" : ""}`}
+                      onClick={(e) => toggleWord(i, e.shiftKey)}
+                    >
+                      {w.word}{" "}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            </section>
           </div>
 
           {job?.status === "error" && (
