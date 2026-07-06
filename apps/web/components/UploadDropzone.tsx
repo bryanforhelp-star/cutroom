@@ -128,12 +128,7 @@ export default function UploadDropzone({
         }}
       >
         {progress === null ? (
-          <>
-            <strong>Drop a video to start</strong>
-            <span>or click to choose a file</span>
-          </>
-        ) : demoMode && progress === 100 ? (
-          <>video loaded — opening editor…</>
+          <>drop your talking-head clip here, or click to pick one</>
         ) : (
           <>uploading… {progress}%</>
         )}

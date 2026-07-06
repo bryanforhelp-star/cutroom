@@ -1,130 +1,167 @@
 "use client";
 
-import { useState, type PointerEvent } from "react";
-import type { Clip, Word } from "@/lib/edl";
-import type { ClipKeyframes, ScriptSection, TimelineOverlay } from "@/lib/editorCommands";
+import { useEffect, useRef } from "react";
+import type { Clip } from "@/lib/edl";
+import { keptDuration, fmtTime } from "@/lib/edl";
+import { sourceToTimeline } from "./Player";
+import { useThumbnails, useWaveform } from "./useMedia";
 
-function pct(n: number, total: number) {
-  if (!total) return "0%";
-  return `${Math.max(0, Math.min(100, (n / total) * 100))}%`;
+/** Map timeline (post-cut) time back to source time. */
+export function timelineToSource(t: number, clips: Clip[]): number {
+  let acc = 0;
+  for (const c of clips) {
+    const d = c.out - c.in;
+    if (t < acc + d) return c.in + (t - acc);
+    acc += d;
+  }
+  return clips.length ? clips[clips.length - 1].out : 0;
 }
 
-function timelineTimeFromEvent(e: PointerEvent<HTMLDivElement>, total: number) {
-  const rect = e.currentTarget.getBoundingClientRect();
-  const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
-  return (x / rect.width) * total;
+function ClipWave({
+  wave,
+  cin,
+  cout,
+}: {
+  wave: { peaks: Float32Array; duration: number } | null;
+  cin: number;
+  cout: number;
+}) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const cv = ref.current;
+    if (!cv || !wave) return;
+    const draw = () => {
+      const dpr = window.devicePixelRatio || 1;
+      const w = cv.offsetWidth, h = cv.offsetHeight;
+      if (!w || !h) return;
+      cv.width = w * dpr;
+      cv.height = h * dpr;
+      const ctx = cv.getContext("2d");
+      if (!ctx) return;
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "rgba(27,43,255,0.6)";
+      const n = Math.max(1, Math.floor(w / 3));
+      for (let i = 0; i < n; i++) {
+        const t = cin + ((i + 0.5) / n) * (cout - cin);
+        const idx = Math.min(wave.peaks.length - 1, Math.max(0, Math.floor((t / wave.duration) * wave.peaks.length)));
+        const bh = Math.max(1, wave.peaks[idx] * (h - 2));
+        ctx.fillRect(i * 3, h - bh - 1, 2, bh);
+      }
+    };
+    draw();
+    const ro = new ResizeObserver(draw);
+    ro.observe(cv);
+    return () => ro.disconnect();
+  }, [wave, cin, cout]);
+  return <canvas ref={ref} className="tl-wave" />;
 }
 
-type TimelineProps = {
-  words: Word[];
-  clips: Clip[];
-  playT: number;
-  overlays: TimelineOverlay[];
-  keyframes: ClipKeyframes[];
-  scriptSections: ScriptSection[];
-  onSeek: (sourceTime: number) => void;
-  onCutRange: (sourceStart: number, sourceEnd: number) => void;
-  onAddTransition: (afterClipId: string) => void;
-  onAddOverlay: () => void;
-  onAddZoom: (clipId: string) => void;
-};
-
+/**
+ * Editor timeline, CapCut/Premiere-style: filmstrip thumbnails + audio waveform
+ * inside each clip block, seams at cut points, cuts ripple closed.
+ * click = jump · drag range + delete = cut · playhead tracks playback.
+ */
 export default function Timeline({
-  words,
   clips,
-  playT,
-  overlays,
-  keyframes,
-  scriptSections,
+  videoSrc,
+  playSourceT,
+  sel,
+  onSel,
   onSeek,
-  onCutRange,
-  onAddTransition,
-  onAddOverlay,
-  onAddZoom,
-}: TimelineProps) {
-  const total = words.length ? words[words.length - 1].end : 0;
-  const [dragStart, setDragStart] = useTimelineDrag();
-  const [dragEnd, setDragEnd] = useTimelineDrag();
-  const hasSelection = dragStart !== null && dragEnd !== null && Math.abs(dragEnd - dragStart) > 0.04;
-  const sectionByClip = new Map(scriptSections.map((s) => [s.clipId, s]));
-  const selA = hasSelection ? Math.min(dragStart!, dragEnd!) : 0;
-  const selB = hasSelection ? Math.max(dragStart!, dragEnd!) : 0;
+}: {
+  clips: Clip[];
+  videoSrc: string | null;
+  playSourceT: number;
+  sel: [number, number] | null;
+  onSel: (s: [number, number] | null) => void;
+  onSeek: (sourceT: number) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ start: number; moved: boolean } | null>(null);
+  const { thumbs, interval } = useThumbnails(videoSrc);
+  const wave = useWaveform(videoSrc);
+  const total = keptDuration(clips);
+  if (!clips.length || total <= 0) return null;
+
+  function tlFromEvent(e: React.PointerEvent): number {
+    const r = ref.current!.getBoundingClientRect();
+    const x = Math.min(Math.max(e.clientX - r.left, 0), r.width);
+    return (x / r.width) * total;
+  }
+  function down(e: React.PointerEvent) {
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    drag.current = { start: tlFromEvent(e), moved: false };
+    onSel(null);
+  }
+  function move(e: React.PointerEvent) {
+    if (!drag.current) return;
+    const t = tlFromEvent(e);
+    if (Math.abs(t - drag.current.start) > total * 0.004) {
+      drag.current.moved = true;
+      onSel([Math.min(drag.current.start, t), Math.max(drag.current.start, t)]);
+    }
+  }
+  function up(e: React.PointerEvent) {
+    if (!drag.current) return;
+    if (!drag.current.moved) {
+      onSel(null);
+      onSeek(timelineToSource(tlFromEvent(e), clips));
+    }
+    drag.current = null;
+  }
+
+  const playheadPct = (sourceToTimeline(playSourceT, clips) / total) * 100;
+
+  let acc = 0;
+  const blocks = clips.map((c) => {
+    const d = c.out - c.in;
+    const b = { clip: c, dur: d, left: (acc / total) * 100, width: (d / total) * 100 };
+    acc += d;
+    return b;
+  });
 
   return (
-    <section className="timeline-panel" aria-label="timeline editor">
-      <div className="timeline-head">
-        <span>timeline</span>
-        <div className="row">
-          <button className="ghost small" onClick={onAddOverlay}>+ overlay</button>
-          {clips[0] && <button className="ghost small" onClick={() => onAddZoom(clips[0].id)}>+ zoom</button>}
-        </div>
-      </div>
-
-      <div
-        className="timeline-ruler"
-        onPointerDown={(e) => {
-          const t = timelineTimeFromEvent(e, total);
-          setDragStart(t);
-          setDragEnd(t);
-          onSeek(t);
-          (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          if (dragStart === null) return;
-          setDragEnd(timelineTimeFromEvent(e, total));
-        }}
-        onPointerUp={(e) => {
-          if (dragStart !== null && dragEnd !== null && Math.abs(dragEnd - dragStart) <= 0.04) {
-            onSeek(timelineTimeFromEvent(e, total));
-          }
-          (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
-        }}
-      >
-        <div className="timeline-row clips-row">
-          {clips.map((clip, i) => (
-            <div
-              key={clip.id}
-              className="clip-block"
-              style={{ left: pct(clip.in, total), width: pct(clip.out - clip.in, total) }}
-              title={`${clip.id}: ${clip.in.toFixed(2)} → ${clip.out.toFixed(2)}`}
-              onDoubleClick={() => onAddTransition(clip.id)}
-            >
-              <span>{sectionByClip.get(clip.id)?.label ?? clip.id}</span>
-              {i < clips.length - 1 && <button className="transition-dot" onClick={(e) => { e.stopPropagation(); onAddTransition(clip.id); }}>+</button>}
+    <div className="timeline-row">
+      <div ref={ref} className="timeline" onPointerDown={down} onPointerMove={move} onPointerUp={up}>
+        {blocks.map((b, i) => (
+          <div
+            key={b.clip.id}
+            className={`tl-clip ${i === 0 ? "first" : ""} ${i === blocks.length - 1 ? "last" : ""}`}
+            style={{ left: `${b.left}%`, width: `${b.width}%` }}
+          >
+            <div className="tl-head">{b.width > 7 && <span>{fmtTime(b.dur)}</span>}</div>
+            <div className="tl-film">
+              {thumbs
+                .filter((th) => th.t >= b.clip.in - interval / 2 && th.t < b.clip.out)
+                .map((th) => (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    key={th.t}
+                    src={th.url}
+                    alt=""
+                    draggable={false}
+                    style={{
+                      left: `${(Math.max(0, th.t - interval / 2 - b.clip.in) / b.dur) * 100}%`,
+                      width: `${(interval / b.dur) * 100}%`,
+                    }}
+                  />
+                ))}
             </div>
-          ))}
-        </div>
-
-        <div className="timeline-row overlay-row">
-          {overlays.map((o) => (
-            <div key={o.id} className="overlay-block" style={{ left: pct(o.start, total), width: pct(o.end - o.start, total) }}>
-              {o.text}
-            </div>
-          ))}
-        </div>
-
-        <div className="timeline-row keyframe-row">
-          {keyframes.flatMap((track) => track.keyframes.map((k, i) => (
-            <span key={`${track.id}-${i}`} className="keyframe-dot" style={{ left: pct(k.at, total) }} title={`zoom ${k.scale.toFixed(2)}x`} />
-          )))}
-        </div>
-
-        <div className="playhead" style={{ left: pct(playT, total) }} />
-        {hasSelection && <div className="timeline-selection" style={{ left: pct(selA, total), width: pct(selB - selA, total) }} />}
+            <ClipWave wave={wave} cin={b.clip.in} cout={b.clip.out} />
+          </div>
+        ))}
+        {sel && (
+          <div
+            className="tl-sel"
+            style={{ left: `${(sel[0] / total) * 100}%`, width: `${((sel[1] - sel[0]) / total) * 100}%` }}
+          />
+        )}
+        <div className="tl-playhead" style={{ left: `${playheadPct}%` }} />
       </div>
-
-      <div className="timeline-actions">
-        <span className="hint">drag a range then cut · double-click a clip edge for transition</span>
-        <button className="small" disabled={!hasSelection} onClick={() => {
-          onCutRange(selA, selB);
-          setDragStart(null);
-          setDragEnd(null);
-        }}>cut range</button>
-      </div>
-    </section>
+      <p className="hint" style={{ marginTop: 8 }}>
+        drag to select, delete to cut · click to jump · seams are cut points
+      </p>
+    </div>
   );
-}
-
-function useTimelineDrag(): [number | null, (v: number | null) => void] {
-  return useState<number | null>(null);
 }

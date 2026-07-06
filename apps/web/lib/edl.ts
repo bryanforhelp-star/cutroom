@@ -16,22 +16,6 @@ export type Overlay =
 
 export type Transition = { after_clip: string; type: "cut" | "crossfade" | "punch_in"; duration: number };
 
-export type ZoomKeyframe = {
-  at: number;
-  scale: number;
-  x?: number;
-  y?: number;
-};
-
-export type ClipKeyframes = {
-  id: string;
-  clipId: string;
-  property: "zoom";
-  keyframes: ZoomKeyframe[];
-};
-
-export type KeyframeTrack = ClipKeyframes;
-
 export type EDL = {
   version: 1;
   canvas: { w: number; h: number; fps: number };
@@ -39,7 +23,6 @@ export type EDL = {
   captions: { enabled: boolean; preset: string };
   overlays: Overlay[];
   transitions: Transition[];
-  keyframes?: KeyframeTrack[];
   audio: {
     music?: { asset: string; volume: number; duck: boolean };
     sfx: { id: string; asset: string; at: number }[];
@@ -54,8 +37,14 @@ export const CANVAS_PRESETS: Record<string, { w: number; h: number }> = {
 
 const PAD = 0.05; // seconds of breathing room around kept runs
 
-/** Group contiguous kept words into source-time clips. */
-export function buildClipsFromWords(words: Word[], removed: Set<number>): Clip[] {
+/** Group contiguous kept words into source-time clips.
+ *  opts.maxGap: also split (and thereby trim) silences longer than this many seconds. */
+export function buildClipsFromWords(
+  words: Word[],
+  removed: Set<number>,
+  opts?: { maxGap?: number }
+): Clip[] {
+  const maxGap = opts?.maxGap ?? Infinity;
   const clips: Clip[] = [];
   let run: Word[] = [];
   const flush = () => {
@@ -69,8 +58,9 @@ export function buildClipsFromWords(words: Word[], removed: Set<number>): Clip[]
     run = [];
   };
   words.forEach((w, i) => {
-    if (removed.has(i)) flush();
-    else run.push(w);
+    if (removed.has(i)) { flush(); return; }
+    if (run.length && w.start - run[run.length - 1].end > maxGap) flush(); // trim dead air
+    run.push(w);
   });
   flush();
   // guard against overlaps introduced by padding across a tiny cut
