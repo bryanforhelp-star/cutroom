@@ -16,6 +16,22 @@ export type Overlay =
 
 export type Transition = { after_clip: string; type: "cut" | "crossfade" | "punch_in"; duration: number };
 
+export type ZoomKeyframe = {
+  at: number;
+  scale: number;
+  x?: number;
+  y?: number;
+};
+
+export type ClipKeyframes = {
+  id: string;
+  clipId: string;
+  property: "zoom";
+  keyframes: ZoomKeyframe[];
+};
+
+export type KeyframeTrack = ClipKeyframes;
+
 export type EDL = {
   version: 1;
   canvas: { w: number; h: number; fps: number };
@@ -23,6 +39,7 @@ export type EDL = {
   captions: { enabled: boolean; preset: string };
   overlays: Overlay[];
   transitions: Transition[];
+  keyframes?: KeyframeTrack[];
   audio: {
     music?: { asset: string; volume: number; duck: boolean };
     sfx: { id: string; asset: string; at: number }[];
