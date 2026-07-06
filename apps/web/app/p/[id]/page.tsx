@@ -25,6 +25,44 @@ type Job = { id: string; status: string; output_path: string | null; error: stri
 
 const PARAGRAPH_GAP = 1.2; // seconds of silence that starts a new paragraph
 
+const DEMO_WORDS: Word[] = [
+  { word: "Here", start: 0.0, end: 0.25 },
+  { word: "is", start: 0.25, end: 0.4 },
+  { word: "the", start: 0.4, end: 0.55 },
+  { word: "new", start: 0.55, end: 0.78 },
+  { word: "Cutroom", start: 0.78, end: 1.22 },
+  { word: "editor", start: 1.22, end: 1.62 },
+  { word: "with", start: 1.62, end: 1.85 },
+  { word: "transcript", start: 1.85, end: 2.35 },
+  { word: "cuts", start: 2.35, end: 2.7 },
+  { word: "and", start: 2.7, end: 2.88 },
+  { word: "a", start: 2.88, end: 3.0 },
+  { word: "timeline", start: 3.0, end: 3.52 },
+  { word: "below.", start: 3.52, end: 4.0 },
+  { word: "Um", start: 5.2, end: 5.42 },
+  { word: "you", start: 5.42, end: 5.62 },
+  { word: "can", start: 5.62, end: 5.84 },
+  { word: "delete", start: 5.84, end: 6.2 },
+  { word: "words", start: 6.2, end: 6.55 },
+  { word: "or", start: 6.55, end: 6.74 },
+  { word: "ask", start: 6.74, end: 6.98 },
+  { word: "AI", start: 6.98, end: 7.25 },
+  { word: "to", start: 7.25, end: 7.42 },
+  { word: "assemble", start: 7.42, end: 7.95 },
+  { word: "the", start: 7.95, end: 8.1 },
+  { word: "script.", start: 8.1, end: 8.55 },
+];
+
+function demoProjectName(id: string) {
+  if (typeof window === "undefined") return "Demo project";
+  try {
+    const projects = JSON.parse(window.localStorage.getItem("cutroom.demo.projects") ?? "[]") as Array<{ id: string; name: string }>;
+    return projects.find((p) => p.id === id)?.name ?? "Demo project";
+  } catch {
+    return "Demo project";
+  }
+}
+
 export default function Editor() {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
@@ -79,33 +117,63 @@ export default function Editor() {
   }, []);
 
   const load = useCallback(async () => {
-    const { data: p } = await supabase.from("projects").select("*").eq("id", id).single();
-    setProject(p);
-    if (p?.status === "ready") {
-      const { data: t } = await supabase
-        .from("transcripts")
-        .select("words")
-        .eq("project_id", id)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (t?.length) {
-        const nextWords = t[0].words as Word[];
-        setWords(nextWords);
-        setEditState((prev) => prev?.sourceWords.length === nextWords.length ? prev : createInitialEditState(nextWords));
-      }
-      if (p.source_asset_id) {
-        const { data: asset } = await supabase
-          .from("assets")
-          .select("storage_path")
-          .eq("id", p.source_asset_id)
-          .single();
-        if (asset) {
-          const { data: signed } = await supabase.storage
-            .from(BUCKET)
-            .createSignedUrl(asset.storage_path, 7200);
-          setVideoUrl(signed?.signedUrl ?? null);
+    if (id?.startsWith("demo-")) {
+      const demoWords = DEMO_WORDS;
+      setProject({
+        id,
+        name: demoProjectName(id),
+        status: "ready",
+        orientation: "landscape",
+        source_asset_id: null,
+        error: null,
+      });
+      setWords(demoWords);
+      setEditState((prev) => prev?.sourceWords.length === demoWords.length ? prev : createInitialEditState(demoWords));
+      setVideoUrl(null);
+      return;
+    }
+
+    try {
+      const { data: p, error: pErr } = await supabase.from("projects").select("*").eq("id", id).single();
+      if (pErr) throw pErr;
+      setProject(p);
+      if (p?.status === "ready") {
+        const { data: t, error: tErr } = await supabase
+          .from("transcripts")
+          .select("words")
+          .eq("project_id", id)
+          .order("created_at", { ascending: false })
+          .limit(1);
+        if (tErr) throw tErr;
+        if (t?.length) {
+          const nextWords = t[0].words as Word[];
+          setWords(nextWords);
+          setEditState((prev) => prev?.sourceWords.length === nextWords.length ? prev : createInitialEditState(nextWords));
+        }
+        if (p.source_asset_id) {
+          const { data: asset } = await supabase
+            .from("assets")
+            .select("storage_path")
+            .eq("id", p.source_asset_id)
+            .single();
+          if (asset) {
+            const { data: signed } = await supabase.storage
+              .from(BUCKET)
+              .createSignedUrl(asset.storage_path, 7200);
+            setVideoUrl(signed?.signedUrl ?? null);
+          }
         }
       }
+    } catch (err: any) {
+      console.error("Project load failed", err);
+      setProject({
+        id,
+        name: "Project unavailable",
+        status: "error",
+        orientation: "landscape",
+        source_asset_id: null,
+        error: err?.message ?? "Could not load project. Supabase auth or env is blocking access.",
+      });
     }
   }, [id]);
 
@@ -205,6 +273,10 @@ export default function Editor() {
 
   async function exportCut() {
     if (!words || !project) return;
+    if (project.id.startsWith("demo-")) {
+      alert("Demo mode is for testing the editor UI. Live export needs the Supabase/render worker connection opened up.");
+      return;
+    }
     setDownloadUrl(null);
     const edl = buildPhase1EDL(words, removed, project.orientation);
     if (editState) {
@@ -357,6 +429,11 @@ export default function Editor() {
               />
               {videoUrl ? (
                 <Player src={videoUrl} clips={clips} seek={seek} onTime={setPlayT} />
+              ) : project.id.startsWith("demo-") ? (
+                <div className="card demo-preview">
+                  <span className="status ok">demo project loaded</span>
+                  <p className="hint">Test transcript cuts, AI commands, script assembly, and the timeline here. Upload/export unlock when the Supabase project is public.</p>
+                </div>
               ) : (
                 <div className="card"><span className="status">loading video…</span></div>
               )}
