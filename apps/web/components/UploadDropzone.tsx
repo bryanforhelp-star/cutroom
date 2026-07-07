@@ -30,13 +30,38 @@ export default function UploadDropzone({
     }
 
     try {
-      const form = new FormData();
-      form.append("projectId", projectId);
-      form.append("file", file);
-      setProgress(15);
-      const res = await fetch("/api/uploads/direct", { method: "POST", body: form });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error ?? "upload failed");
+      setProgress(8);
+      const signRes = await fetch("/api/uploads/sign", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, fileName: file.name }),
+      });
+      const signed = await signRes.json();
+      if (!signRes.ok) throw new Error(signed.error ?? "could not prepare upload");
+
+      setProgress(25);
+      const uploadForm = new FormData();
+      uploadForm.append("cacheControl", "3600");
+      uploadForm.append("", file);
+      const uploadRes = await fetch(signed.signedUrl, {
+        method: "PUT",
+        headers: { "x-upsert": "true" },
+        body: uploadForm,
+      });
+      if (!uploadRes.ok) {
+        const uploadText = await uploadRes.text().catch(() => "");
+        throw new Error(uploadText || `upload failed (${uploadRes.status})`);
+      }
+
+      setProgress(85);
+      const completeRes = await fetch("/api/uploads/complete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, path: signed.path }),
+      });
+      const completed = await completeRes.json();
+      if (!completeRes.ok) throw new Error(completed.error ?? "upload did not finish");
+
       setProgress(100);
       onDone();
     } catch (e: any) {
