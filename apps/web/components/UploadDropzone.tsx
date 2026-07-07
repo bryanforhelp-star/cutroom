@@ -2,6 +2,43 @@
 
 import { useRef, useState } from "react";
 
+function uploadViaAppServer(file: File, projectId: string, onProgress: (progress: number) => void) {
+  return new Promise<void>((resolve, reject) => {
+    const form = new FormData();
+    form.append("projectId", projectId);
+    form.append("file", file);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/uploads/direct");
+    xhr.timeout = 180_000;
+
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      const pct = Math.min(80, Math.max(5, Math.round((event.loaded / event.total) * 80)));
+      onProgress(pct);
+    };
+
+    xhr.onload = () => {
+      let body: any = null;
+      try {
+        body = xhr.responseText ? JSON.parse(xhr.responseText) : null;
+      } catch {
+        body = null;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress(100);
+        resolve();
+        return;
+      }
+      reject(new Error(body?.error ?? `upload failed (${xhr.status})`));
+    };
+
+    xhr.onerror = () => reject(new Error("upload network error"));
+    xhr.ontimeout = () => reject(new Error("upload timed out — try a shorter clip or stronger connection"));
+    xhr.send(form);
+  });
+}
+
 export default function UploadDropzone({
   projectId,
   onDone,
@@ -30,39 +67,7 @@ export default function UploadDropzone({
     }
 
     try {
-      setProgress(8);
-      const signRes = await fetch("/api/uploads/sign", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectId, fileName: file.name }),
-      });
-      const signed = await signRes.json();
-      if (!signRes.ok) throw new Error(signed.error ?? "could not prepare upload");
-
-      setProgress(25);
-      const uploadForm = new FormData();
-      uploadForm.append("cacheControl", "3600");
-      uploadForm.append("", file);
-      const uploadRes = await fetch(signed.signedUrl, {
-        method: "PUT",
-        headers: { "x-upsert": "true" },
-        body: uploadForm,
-      });
-      if (!uploadRes.ok) {
-        const uploadText = await uploadRes.text().catch(() => "");
-        throw new Error(uploadText || `upload failed (${uploadRes.status})`);
-      }
-
-      setProgress(85);
-      const completeRes = await fetch("/api/uploads/complete", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectId, path: signed.path }),
-      });
-      const completed = await completeRes.json();
-      if (!completeRes.ok) throw new Error(completed.error ?? "upload did not finish");
-
-      setProgress(100);
+      await uploadViaAppServer(file, projectId, setProgress);
       onDone();
     } catch (e: any) {
       setError(String(e?.message ?? e));
@@ -89,8 +94,10 @@ export default function UploadDropzone({
       >
         {progress === null ? (
           <>drop your talking-head clip here, or click to pick one</>
-        ) : (
+        ) : progress < 100 ? (
           <>uploading… {progress}%</>
+        ) : (
+          <>upload complete · starting transcription…</>
         )}
         {progress !== null && (
           <div className="progress">
