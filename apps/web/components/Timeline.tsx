@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Clip } from "@/lib/edl";
 import { keptDuration, fmtTime } from "@/lib/edl";
 import { sourceToTimeline } from "./Player";
@@ -69,6 +69,7 @@ export default function Timeline({
   sel,
   onSel,
   onSeek,
+  onSplit,
 }: {
   clips: Clip[];
   videoSrc: string | null;
@@ -76,8 +77,10 @@ export default function Timeline({
   sel: [number, number] | null;
   onSel: (s: [number, number] | null) => void;
   onSeek: (sourceT: number) => void;
+  onSplit: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState(1);
   const drag = useRef<{ start: number; moved: boolean } | null>(null);
   const { thumbs, interval } = useThumbnails(videoSrc);
   const wave = useWaveform(videoSrc);
@@ -123,8 +126,31 @@ export default function Timeline({
 
   return (
     <div className="timeline-row">
-      <div ref={ref} className="timeline" onPointerDown={down} onPointerMove={move} onPointerUp={up}>
-        {blocks.map((b, i) => (
+      <div className="timeline-tools">
+        <button className="ghost small" onClick={() => setZoom(1)}>fit</button>
+        <button className="ghost small" onClick={() => setZoom((z) => Math.max(1, Number((z - 0.5).toFixed(1))))}>−</button>
+        <input
+          aria-label="timeline zoom"
+          type="range"
+          min="1"
+          max="8"
+          step="0.5"
+          value={zoom}
+          onChange={(e) => setZoom(Number(e.target.value))}
+        />
+        <button className="ghost small" onClick={() => setZoom((z) => Math.min(8, Number((z + 0.5).toFixed(1))))}>+</button>
+        <button className="ghost small" onClick={onSplit}>split</button>
+      </div>
+      <div className="timeline-scroll">
+        <div
+          ref={ref}
+          className="timeline"
+          style={{ width: `${zoom * 100}%` }}
+          onPointerDown={down}
+          onPointerMove={move}
+          onPointerUp={up}
+        >
+          {blocks.map((b, i) => (
           <div
             key={b.clip.id}
             className={`tl-clip ${i === 0 ? "first" : ""} ${i === blocks.length - 1 ? "last" : ""}`}
@@ -158,6 +184,7 @@ export default function Timeline({
           />
         )}
         <div className="tl-playhead" style={{ left: `${playheadPct}%` }} />
+        </div>
       </div>
       <p className="hint" style={{ marginTop: 8 }}>
         drag to select, delete to cut · click to jump · seams are cut points

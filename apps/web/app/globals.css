@@ -238,6 +238,9 @@ button.small { padding: 5px 8px; font-size: 13px; }
 
 /* timeline — filmstrip + waveform, capcut-style */
 .timeline-row { border-top: 1px solid var(--line-soft); margin-top: 22px; padding-top: 14px; }
+.timeline-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.timeline-tools input[type="range"] { flex: 0 1 180px; min-width: 110px; accent-color: var(--accent); }
+.timeline-scroll { width: 100%; overflow-x: auto; overflow-y: hidden; padding: 6px 0 8px; }
 .timeline {
   position: relative;
   height: 86px;

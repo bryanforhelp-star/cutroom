@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { supabase } from "@/lib/supabase";
 
 type Project = { id: string; name: string; status: string; created_at: string };
 
@@ -43,12 +42,10 @@ export default function Home() {
   async function loadProjects() {
     const demoProjects = loadDemoProjects();
     try {
-      const { data, error } = await supabase
-        .from("projects")
-        .select("id, name, status, created_at")
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      setProjects([...(data ?? []), ...demoProjects]);
+      const res = await fetch("/api/projects", { cache: "no-store" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "project load failed");
+      setProjects([...(body.projects ?? []), ...demoProjects]);
     } catch (err) {
       console.warn("Supabase project load failed; using demo projects", err);
       setNotice("Prototype mode: database auth is blocking live project storage, so create opens a local demo project instead of freezing.");
@@ -67,13 +64,14 @@ export default function Home() {
     setNotice(null);
 
     try {
-      const { data, error } = await supabase
-        .from("projects")
-        .insert({ name: projectName })
-        .select("id")
-        .single();
-      if (error || !data) throw error ?? new Error("Project insert returned no data");
-      window.location.href = `/p/${data.id}`;
+      const res = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: projectName }),
+      });
+      const body = await res.json();
+      if (!res.ok || !body.project?.id) throw new Error(body.error ?? "Project insert failed");
+      window.location.href = `/p/${body.project.id}`;
     } catch (err) {
       console.warn("Supabase create failed; opening local demo project", err);
       const demo = createDemoProject(projectName);

@@ -65,6 +65,21 @@ function demoProjectName(id: string) {
 
 type EditState = { removed: Set<number>; tighten: boolean };
 
+function applySplitsToClips(clips: ReturnType<typeof buildClipsFromWords>, splits: number[]) {
+  const orderedSplits = [...splits].sort((a, b) => a - b);
+  const out: ReturnType<typeof buildClipsFromWords> = [];
+  for (const clip of clips) {
+    let cursor = clip.in;
+    const inside = orderedSplits.filter((t) => t > clip.in + 0.05 && t < clip.out - 0.05);
+    for (const t of inside) {
+      out.push({ ...clip, id: `${clip.id}s${out.length + 1}`, in: cursor, out: t });
+      cursor = t;
+    }
+    out.push({ ...clip, id: inside.length ? `${clip.id}s${out.length + 1}` : clip.id, in: cursor, out: clip.out });
+  }
+  return out.filter((c) => c.out - c.in > 0.05);
+}
+
 export default function Editor() {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
@@ -73,6 +88,7 @@ export default function Editor() {
   const [tighten, setTighten] = useState(false);
   const [showCuts, setShowCuts] = useState(false);
   const [scriptOpen, setScriptOpen] = useState(false);
+  const [splits, setSplits] = useState<number[]>([]);
   const [job, setJob] = useState<Job | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -114,29 +130,22 @@ export default function Editor() {
       return;
     }
 
-    const { data: p } = await supabase.from("projects").select("*").eq("id", id).single();
-    setProject(p);
-    if (p?.status === "ready") {
-      const { data: t } = await supabase
-        .from("transcripts")
-        .select("words")
-        .eq("project_id", id)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (t?.length) setWords(t[0].words as Word[]);
-      if (p.source_asset_id) {
-        const { data: asset } = await supabase
-          .from("assets")
-          .select("storage_path")
-          .eq("id", p.source_asset_id)
-          .single();
-        if (asset) {
-          const { data: signed } = await supabase.storage
-            .from(BUCKET)
-            .createSignedUrl(asset.storage_path, 7200);
-          setVideoUrl(signed?.signedUrl ?? null);
-        }
-      }
+    try {
+      const res = await fetch(`/api/projects/${id}`, { cache: "no-store" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "project load failed");
+      setProject(body.project);
+      if (body.words?.length) setWords(body.words as Word[]);
+      if (body.videoUrl) setVideoUrl(body.videoUrl);
+    } catch (err: any) {
+      setProject({
+        id,
+        name: "Project unavailable",
+        status: "error",
+        orientation: "9:16",
+        source_asset_id: null,
+        error: err?.message ?? "Could not load project.",
+      });
     }
   }, [id, videoUrl]);
 
@@ -165,10 +174,11 @@ export default function Editor() {
     return () => clearInterval(t);
   }, [job]);
 
-  const clips = useMemo(
+  const baseClips = useMemo(
     () => (words ? buildClipsFromWords(words, removed, tighten ? { maxGap: SILENCE_GAP } : undefined) : []),
     [words, removed, tighten]
   );
+  const clips = useMemo(() => applySplitsToClips(baseClips, splits), [baseClips, splits]);
 
   const paragraphs = useMemo(() => {
     if (!words) return [];
@@ -279,6 +289,7 @@ export default function Editor() {
     setWords(DEMO_WORDS);
     setRemoved(new Set());
     setTighten(false);
+    setSplits([]);
     history.current = [];
     setProject({
       id,
@@ -288,6 +299,11 @@ export default function Editor() {
       source_asset_id: null,
       error: null,
     });
+  }
+
+  function splitAtPlayhead() {
+    if (!clips.some((c) => playT > c.in + 0.05 && playT < c.out - 0.05)) return;
+    setSplits((prev) => prev.some((t) => Math.abs(t - playT) < 0.05) ? prev : [...prev, playT]);
   }
 
   async function exportCut() {
@@ -456,6 +472,7 @@ export default function Editor() {
             sel={tlSel}
             onSel={setTlSel}
             onSeek={(t) => setSeek({ t, nonce: Date.now() })}
+            onSplit={splitAtPlayhead}
           />
         </>
       )}
