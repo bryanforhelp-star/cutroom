@@ -38,17 +38,18 @@ export default function Player({
     if (inClip) return;
     const next = cs.find((c) => c.in > t);
     if (next) v.currentTime = next.in + 0.01;
-    else {
+    else if (cs.length) {
       v.pause();
       v.currentTime = cs[0].in;
     }
   }
 
-  // start playback at the first kept clip
+  // start playback at the first kept clip (or 0 for full-source preview)
   function handleLoaded() {
     const v = ref.current;
     const cs = clipsRef.current;
-    if (v && cs.length && v.currentTime < cs[0].in) v.currentTime = cs[0].in;
+    if (!v || !cs.length) return;
+    if (v.currentTime < cs[0].in) v.currentTime = cs[0].in;
   }
 
   return (
@@ -63,7 +64,9 @@ export default function Player({
         preload="metadata"
       />
       <div className="player-meta">
-        <span className="status">preview plays the cut · {fmtTime(keptDuration(clips))} total</span>
+        <span className="status">
+          {clips.length ? `preview plays the cut · ${fmtTime(keptDuration(clips))} total` : "source preview"}
+        </span>
       </div>
     </div>
   );

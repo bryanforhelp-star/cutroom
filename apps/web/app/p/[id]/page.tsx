@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { supabase, BUCKET } from "@/lib/supabase";
-import UploadDropzone from "@/components/UploadDropzone";
+import UploadDropzone, { type UploadResult } from "@/components/UploadDropzone";
 import Player from "@/components/Player";
 import Timeline from "@/components/Timeline";
 import ScriptMatch from "@/components/ScriptMatch";
@@ -21,8 +21,8 @@ type Project = {
 };
 type Job = { id: string; status: string; output_path: string | null; error: string | null };
 
-const PARAGRAPH_GAP = 1.2; // silence that starts a new paragraph in the doc
-const SILENCE_GAP = 0.8;   // "cut silences" trims dead air longer than this
+const PARAGRAPH_GAP = 1.2;
+const SILENCE_GAP = 0.8;
 
 const DEMO_WORDS: Word[] = [
   { word: "Here", start: 0.0, end: 0.25 },
@@ -87,7 +87,6 @@ export default function Editor() {
   const [removed, setRemoved] = useState<Set<number>>(new Set());
   const [tighten, setTighten] = useState(false);
   const [showCuts, setShowCuts] = useState(false);
-  const [scriptOpen, setScriptOpen] = useState(false);
   const [splits, setSplits] = useState<number[]>([]);
   const [job, setJob] = useState<Job | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
@@ -96,7 +95,11 @@ export default function Editor() {
   const [seek, setSeek] = useState<{ t: number; nonce: number } | null>(null);
   const [playT, setPlayT] = useState(0);
   const [tlSel, setTlSel] = useState<[number, number] | null>(null);
+  const [transcribeNote, setTranscribeNote] = useState<string | null>(null);
+  const transcribeStarted = useRef(false);
   const history = useRef<EditState[]>([]);
+
+  const isDemo = id.startsWith("demo-");
 
   const commit = useCallback((next: Partial<EditState>) => {
     setRemoved((prevR) => {
@@ -118,17 +121,7 @@ export default function Editor() {
   }, []);
 
   const load = useCallback(async () => {
-    if (id.startsWith("demo-")) {
-      setProject({
-        id,
-        name: demoProjectName(id),
-        status: videoUrl ? "ready" : "created",
-        orientation: "9:16",
-        source_asset_id: null,
-        error: null,
-      });
-      return;
-    }
+    if (isDemo) return;
 
     try {
       const res = await fetch(`/api/projects/${id}`, { cache: "no-store" });
@@ -147,15 +140,57 @@ export default function Editor() {
         error: err?.message ?? "Could not load project.",
       });
     }
-  }, [id, videoUrl]);
+  }, [id, isDemo]);
 
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
+    if (!isDemo) return;
+    setProject({
+      id,
+      name: demoProjectName(id),
+      status: videoUrl ? "ready" : "created",
+      orientation: "9:16",
+      source_asset_id: null,
+      error: null,
+    });
+  }, [id, isDemo, videoUrl]);
+
+  const startTranscription = useCallback(async () => {
+    if (isDemo || transcribeStarted.current) return;
+    transcribeStarted.current = true;
+    setTranscribeNote(null);
+
+    try {
+      const res = await fetch("/api/transcribe/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId: id }),
+      });
+      const body = await res.json();
+      if (res.ok && body.words?.length) {
+        setWords(body.words as Word[]);
+        setProject((p) => (p ? { ...p, status: "ready", error: null } : p));
+        return;
+      }
+      if (res.status === 503) {
+        setTranscribeNote("waiting for transcription worker…");
+        transcribeStarted.current = false;
+        return;
+      }
+      throw new Error(body.error ?? "transcription failed");
+    } catch (err: any) {
+      setTranscribeNote(String(err?.message ?? err));
+      transcribeStarted.current = false;
+    }
+  }, [id, isDemo]);
+
+  useEffect(() => {
     if (project?.status !== "transcribing") return;
-    const t = setInterval(load, 3000);
+    startTranscription();
+    const t = setInterval(load, 4000);
     return () => clearInterval(t);
-  }, [project?.status, load]);
+  }, [project?.status, load, startTranscription]);
 
   useEffect(() => {
     if (!job || job.status === "done" || job.status === "error") return;
@@ -195,7 +230,6 @@ export default function Editor() {
     return words.findIndex((w) => playT >= w.start && playT < w.end);
   }, [words, playT]);
 
-  // ── cutting from the transcript: select text, press delete ──
   function wordIdxFromNode(node: Node | null): number | null {
     let el: Element | null = node instanceof Element ? node : node?.parentElement ?? null;
     while (el && !(el instanceof HTMLElement && el.dataset.i !== undefined)) el = el.parentElement;
@@ -211,7 +245,6 @@ export default function Editor() {
     return [Math.min(a, b), Math.max(a, b)];
   }, []);
 
-  // ── cutting from the timeline: drag range, press delete ──
   const cutTimelineRange = useCallback(
     (a: number, b: number) => {
       if (!words) return;
@@ -283,6 +316,22 @@ export default function Editor() {
     commit({ removed: next });
   }
 
+  function cleanupRecording() {
+    if (!words) return;
+    const next = new Set(removed);
+    words.forEach((w, i) => { if (isFiller(w.word)) next.add(i); });
+    commit({ removed: next, tighten: true });
+  }
+
+  function handleUploadComplete(result: UploadResult) {
+    if (result.videoUrl) setVideoUrl(result.videoUrl);
+    if (isDemo) return;
+    setProject((p) => (p ? { ...p, status: result.status, error: null } : p));
+    transcribeStarted.current = false;
+    startTranscription();
+    load();
+  }
+
   function handleDemoUpload(file: File, objectUrl: string) {
     setDemoFileName(file.name);
     setVideoUrl(objectUrl);
@@ -310,7 +359,7 @@ export default function Editor() {
     if (!words || !project) return;
     setDownloadUrl(null);
     const edl = buildPhase1EDL(words, removed, project.orientation);
-    edl.clips = clips; // includes silence-tightening if enabled
+    edl.clips = clips;
 
     const { data: prev } = await supabase
       .from("edit_lists")
@@ -340,141 +389,146 @@ export default function Editor() {
 
   const kept = keptDuration(clips);
   const rendering = job && job.status !== "done" && job.status !== "error";
-  const isDemo = id.startsWith("demo-");
+  const needsUpload = project.status === "created" && !videoUrl;
+  const isTranscribing = project.status === "transcribing" && !words?.length;
+  const canEdit = !!words?.length;
+  const showWorkspace = !needsUpload || isTranscribing || canEdit;
 
   return (
-    <main className={project.status === "ready" ? "wrap wide" : "wrap"}>
+    <main className={showWorkspace ? "wrap wide" : "wrap"}>
       <div className="toolbar">
         <div className="row">
           <Link href="/" className="brand">‹ cutroom</Link>
           <span className="proj-name">{project.name}</span>
         </div>
         <div className="row">
-          {words && <span className="duration">{fmtTime(kept)}</span>}
+          {canEdit && <span className="duration">{fmtTime(kept)}</span>}
           <button className="ghost" onClick={undo} disabled={!history.current.length}>undo</button>
-          <button onClick={exportCut} disabled={isDemo || !!rendering || clips.length === 0 || !words} title={isDemo ? "export needs a real Supabase project" : undefined}>
+          <button onClick={exportCut} disabled={isDemo || !!rendering || clips.length === 0 || !canEdit} title={isDemo ? "export needs a real Supabase project" : undefined}>
             {rendering ? "rendering…" : "export"}
           </button>
         </div>
       </div>
 
-      {project.status === "created" && (
-        <>
-          <p className="sub" style={{ marginTop: 24 }}>{isDemo ? "drop a video to preview the editor locally." : "no source yet."}</p>
-          <UploadDropzone projectId={project.id} onDone={load} demoMode={isDemo} onDemoUpload={handleDemoUpload} />
-        </>
-      )}
-
-      {project.status === "transcribing" && (
-        <p className="status" style={{ marginTop: 48, textAlign: "center" }}>transcribing…</p>
-      )}
-
       {project.status === "error" && (
         <p className="status err" style={{ marginTop: 48 }}>{project.error ?? "something broke"}</p>
       )}
 
-      {project.status === "ready" && words && (
-        <>
-          <div className="editor-grid three">
-            {/* left: the document */}
-            <section className="doc-col">
-              <div className="transcript">
-                {paragraphs.map((para, pi) => {
-                  const visible = para.filter((i) => showCuts || !removed.has(i));
-                  if (!visible.length) return null;
-                  return (
-                    <p key={pi}>
-                      {visible.map((i) => (
-                        <span
-                          key={i}
-                          data-i={i}
-                          className={[
-                            "word",
-                            removed.has(i) ? "removed" : "",
-                            i === activeIdx ? "playing" : "",
-                            isFiller(words[i].word) && !removed.has(i) ? "filler" : "",
-                          ].join(" ")}
-                          onClick={() => handleWordClick(i)}
-                        >
-                          {words[i].word}{" "}
-                        </span>
-                      ))}
-                    </p>
-                  );
-                })}
-              </div>
-              <p className="hint" style={{ marginTop: 18 }}>
-                highlight + delete to cut · click a word to jump · ⌘z undo ·{" "}
-                <a className="text-link" onClick={() => setShowCuts(!showCuts)}>
-                  {showCuts ? "hide cuts" : "show cuts"}
-                </a>
-              </p>
-            </section>
-
-            {/* center: video */}
-            <aside className="player-col">
-              {videoUrl ? (
-                <>
-                  <Player src={videoUrl} clips={clips} seek={seek} onTime={setPlayT} />
-                  {demoFileName && <span className="status">local preview · {demoFileName}</span>}
-                </>
-              ) : (
-                <span className="status">loading video…</span>
-              )}
-              {job?.status === "error" && (
-                <span className="status err">render failed: {job.error}</span>
-              )}
-              {downloadUrl && (
-                <div className="card done-card">
-                  <span className="status ok">done · {fmtTime(kept)}</span>
-                  <a href={downloadUrl} download><button>download</button></a>
-                </div>
-              )}
-            </aside>
-
-            {/* right: tools + chat */}
-            <aside className="side-col">
-              <div className="chips">
-                <button className={`chip ${scriptOpen ? "active" : ""}`} onClick={() => setScriptOpen(!scriptOpen)}>
-                  script
-                </button>
-                <button className="chip" onClick={removeFillers}>remove fillers</button>
-                <button
-                  className={`chip ${tighten ? "active" : ""}`}
-                  onClick={() => commit({ tighten: !tighten })}
-                >
-                  cut silences
-                </button>
-                <button className="chip" disabled title="phase 2">captions</button>
-                <button className="chip" disabled title="phase 2">music</button>
-              </div>
-              {scriptOpen && (
-                <ScriptMatch
-                  words={words}
-                  onApply={(r) => { commit({ removed: r }); setScriptOpen(false); }}
-                />
-              )}
-              <div className="chat">
-                <div className="chat-scroll">
-                  <p className="hint" style={{ textAlign: "center", marginTop: 24 }}>
-                    ai chat comes online in phase 3
-                  </p>
-                </div>
-                <input type="text" className="chat-input" placeholder="message" disabled />
-              </div>
-            </aside>
-          </div>
-
-          <Timeline
-            clips={clips}
-            videoSrc={videoUrl}
-            playSourceT={playT}
-            sel={tlSel}
-            onSel={setTlSel}
-            onSeek={(t) => setSeek({ t, nonce: Date.now() })}
-            onSplit={splitAtPlayhead}
+      {needsUpload && (
+        <section className="upload-stage">
+          <p className="sub">drop a talking-head clip to start editing.</p>
+          <UploadDropzone
+            projectId={project.id}
+            onComplete={handleUploadComplete}
+            demoMode={isDemo}
+            onDemoUpload={handleDemoUpload}
           />
-        </>
+        </section>
+      )}
+
+      {showWorkspace && (
+        <div className="editor-grid three">
+          <section className="doc-col">
+            {canEdit ? (
+              <>
+                <div className="transcript">
+                  {paragraphs.map((para, pi) => {
+                    const visible = para.filter((i) => showCuts || !removed.has(i));
+                    if (!visible.length) return null;
+                    return (
+                      <p key={pi}>
+                        {visible.map((i) => (
+                          <span
+                            key={i}
+                            data-i={i}
+                            className={[
+                              "word",
+                              removed.has(i) ? "removed" : "",
+                              i === activeIdx ? "playing" : "",
+                              isFiller(words![i].word) && !removed.has(i) ? "filler" : "",
+                            ].join(" ")}
+                            onClick={() => handleWordClick(i)}
+                          >
+                            {words![i].word}{" "}
+                          </span>
+                        ))}
+                      </p>
+                    );
+                  })}
+                </div>
+                <p className="hint" style={{ marginTop: 18 }}>
+                  highlight + delete to cut · click a word to jump · ⌘z undo ·{" "}
+                  <a className="text-link" onClick={() => setShowCuts(!showCuts)}>
+                    {showCuts ? "hide cuts" : "show cuts"}
+                  </a>
+                </p>
+              </>
+            ) : (
+              <div className="transcribe-wait">
+                <p className="status">transcribing your clip…</p>
+                <p className="hint">this usually takes 30–90 seconds. your video is ready on the right.</p>
+                {transcribeNote && <p className="status">{transcribeNote}</p>}
+              </div>
+            )}
+          </section>
+
+          <aside className="player-col">
+            {videoUrl ? (
+              <>
+                <Player
+                  src={videoUrl}
+                  clips={canEdit ? clips : []}
+                  seek={seek}
+                  onTime={setPlayT}
+                />
+                {demoFileName && <span className="status">local preview · {demoFileName}</span>}
+              </>
+            ) : (
+              <span className="status">loading video…</span>
+            )}
+            {job?.status === "error" && (
+              <span className="status err">render failed: {job.error}</span>
+            )}
+            {downloadUrl && (
+              <div className="card done-card">
+                <span className="status ok">done · {fmtTime(kept)}</span>
+                <a href={downloadUrl} download><button>download</button></a>
+              </div>
+            )}
+          </aside>
+
+          <aside className="side-col">
+            {canEdit ? (
+              <>
+                <div className="chips">
+                  <button className="chip" onClick={cleanupRecording}>clean up</button>
+                  <button className="chip" onClick={removeFillers}>remove fillers</button>
+                  <button
+                    className={`chip ${tighten ? "active" : ""}`}
+                    onClick={() => commit({ tighten: !tighten })}
+                  >
+                    cut pauses
+                  </button>
+                </div>
+                <ScriptMatch words={words!} onApply={(r) => commit({ removed: r })} />
+              </>
+            ) : (
+              <p className="hint">editing tools unlock once transcription finishes.</p>
+            )}
+          </aside>
+        </div>
+      )}
+
+      {canEdit && (
+        <Timeline
+          clips={clips}
+          videoSrc={videoUrl}
+          playSourceT={playT}
+          sel={tlSel}
+          onSel={setTlSel}
+          onSeek={(t) => setSeek({ t, nonce: Date.now() })}
+          onSplit={splitAtPlayhead}
+        />
       )}
     </main>
   );

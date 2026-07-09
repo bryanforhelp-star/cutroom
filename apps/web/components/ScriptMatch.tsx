@@ -14,10 +14,14 @@ export default function ScriptMatch({
   const [script, setScript] = useState("");
   const [result, setResult] = useState<MatchResult | null>(null);
 
-  function run() {
-    const r = matchScript(words, script);
-    setResult(r);
-    onApply(r.removed);
+  function preview() {
+    setResult(matchScript(words, script));
+  }
+
+  function apply() {
+    if (!result) return;
+    onApply(result.removed);
+    setResult(null);
   }
 
   const pct = result
@@ -26,25 +30,35 @@ export default function ScriptMatch({
 
   return (
     <div className="script-body">
+      <p className="script-title">match your script</p>
       <p className="hint">
-        paste the script you meant to read. everything off-script gets cut — repeated lines keep your last take. ⌘z undoes it.
+        paste the script you meant to read. cutroom finds those lines in the recording and cuts everything else — repeated lines keep your last take.
       </p>
       <textarea
         value={script}
-        onChange={(e) => setScript(e.target.value)}
+        onChange={(e) => {
+          setScript(e.target.value);
+          setResult(null);
+        }}
         placeholder="paste your script…"
-        rows={4}
+        rows={6}
       />
       <div className="row">
-        <button onClick={run} disabled={!script.trim() || !words.length}>
-          match & cut
+        <button onClick={preview} disabled={!script.trim() || !words.length}>
+          find in video
         </button>
         {result && (
-          <span className="status">
-            matched {pct}%{pct < 85 && " — low, check the result"}
-          </span>
+          <button className="ghost" onClick={apply}>
+            apply cuts
+          </button>
         )}
       </div>
+      {result && (
+        <p className={`status ${pct < 85 ? "warn" : "ok"}`}>
+          matched {pct}% of script · will cut {result.cutWords} words
+          {pct < 85 && " — low match, review before applying"}
+        </p>
+      )}
     </div>
   );
 }

@@ -38,7 +38,17 @@ export async function POST(req: Request) {
       .eq("id", projectId);
     if (pErr) throw new Error(pErr.message);
 
-    return NextResponse.json({ assetId: asset.id, path, status: "transcribing" });
+    const { data: signed, error: sErr } = await supabase.storage
+      .from(BUCKET)
+      .createSignedUrl(path, 7200);
+    if (sErr) throw new Error(sErr.message);
+
+    return NextResponse.json({
+      assetId: asset.id,
+      path,
+      status: "transcribing",
+      videoUrl: signed?.signedUrl ?? null,
+    });
   } catch (err: any) {
     return NextResponse.json({ error: String(err?.message ?? err) }, { status: 500 });
   }

@@ -2,8 +2,17 @@
 
 import { useRef, useState } from "react";
 
-function uploadViaAppServer(file: File, projectId: string, onProgress: (progress: number) => void) {
-  return new Promise<void>((resolve, reject) => {
+export type UploadResult = {
+  status: "transcribing";
+  videoUrl?: string | null;
+};
+
+function uploadViaAppServer(
+  file: File,
+  projectId: string,
+  onProgress: (progress: number) => void
+): Promise<UploadResult> {
+  return new Promise((resolve, reject) => {
     const form = new FormData();
     form.append("projectId", projectId);
     form.append("file", file);
@@ -27,7 +36,10 @@ function uploadViaAppServer(file: File, projectId: string, onProgress: (progress
       }
       if (xhr.status >= 200 && xhr.status < 300) {
         onProgress(100);
-        resolve();
+        resolve({
+          status: "transcribing",
+          videoUrl: body?.videoUrl ?? null,
+        });
         return;
       }
       reject(new Error(body?.error ?? `upload failed (${xhr.status})`));
@@ -41,14 +53,16 @@ function uploadViaAppServer(file: File, projectId: string, onProgress: (progress
 
 export default function UploadDropzone({
   projectId,
-  onDone,
+  onComplete,
   demoMode = false,
   onDemoUpload,
+  compact = false,
 }: {
   projectId: string;
-  onDone: () => void;
+  onComplete: (result: UploadResult) => void;
   demoMode?: boolean;
   onDemoUpload?: (file: File, objectUrl: string) => void;
+  compact?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<number | null>(null);
@@ -63,12 +77,13 @@ export default function UploadDropzone({
       const objectUrl = URL.createObjectURL(file);
       setProgress(100);
       onDemoUpload?.(file, objectUrl);
+      onComplete({ status: "transcribing", videoUrl: objectUrl });
       return;
     }
 
     try {
-      await uploadViaAppServer(file, projectId, setProgress);
-      onDone();
+      const result = await uploadViaAppServer(file, projectId, setProgress);
+      onComplete(result);
     } catch (e: any) {
       setError(String(e?.message ?? e));
       setProgress(null);
@@ -78,7 +93,7 @@ export default function UploadDropzone({
   return (
     <div>
       <div
-        className={`drop ${dragOver ? "active" : ""}`}
+        className={`drop ${compact ? "compact" : ""} ${dragOver ? "active" : ""}`}
         onClick={() => inputRef.current?.click()}
         onDragOver={(e) => {
           e.preventDefault();
