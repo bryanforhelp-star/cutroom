@@ -95,8 +95,6 @@ export default function Editor() {
   const [seek, setSeek] = useState<{ t: number; nonce: number } | null>(null);
   const [playT, setPlayT] = useState(0);
   const [tlSel, setTlSel] = useState<[number, number] | null>(null);
-  const [transcribeNote, setTranscribeNote] = useState<string | null>(null);
-  const transcribeStarted = useRef(false);
   const history = useRef<EditState[]>([]);
 
   const isDemo = id.startsWith("demo-");
@@ -156,41 +154,11 @@ export default function Editor() {
     });
   }, [id, isDemo, videoUrl]);
 
-  const startTranscription = useCallback(async () => {
-    if (isDemo || transcribeStarted.current) return;
-    transcribeStarted.current = true;
-    setTranscribeNote(null);
-
-    try {
-      const res = await fetch("/api/transcribe/run", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectId: id }),
-      });
-      const body = await res.json();
-      if (res.ok && body.words?.length) {
-        setWords(body.words as Word[]);
-        setProject((p) => (p ? { ...p, status: "ready", error: null } : p));
-        return;
-      }
-      if (res.status === 503) {
-        setTranscribeNote("waiting for transcription worker…");
-        transcribeStarted.current = false;
-        return;
-      }
-      throw new Error(body.error ?? "transcription failed");
-    } catch (err: any) {
-      setTranscribeNote(String(err?.message ?? err));
-      transcribeStarted.current = false;
-    }
-  }, [id, isDemo]);
-
   useEffect(() => {
     if (project?.status !== "transcribing") return;
-    startTranscription();
-    const t = setInterval(load, 4000);
+    const t = setInterval(load, 3000);
     return () => clearInterval(t);
-  }, [project?.status, load, startTranscription]);
+  }, [project?.status, load]);
 
   useEffect(() => {
     if (!job || job.status === "done" || job.status === "error") return;
@@ -327,8 +295,6 @@ export default function Editor() {
     if (result.videoUrl) setVideoUrl(result.videoUrl);
     if (isDemo) return;
     setProject((p) => (p ? { ...p, status: result.status, error: null } : p));
-    transcribeStarted.current = false;
-    startTranscription();
     load();
   }
 
@@ -467,7 +433,6 @@ export default function Editor() {
               <div className="transcribe-wait">
                 <p className="status">transcribing your clip…</p>
                 <p className="hint">this usually takes 30–90 seconds. your video is ready on the right.</p>
-                {transcribeNote && <p className="status">{transcribeNote}</p>}
               </div>
             )}
           </section>
