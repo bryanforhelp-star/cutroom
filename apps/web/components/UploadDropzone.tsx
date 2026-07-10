@@ -7,47 +7,72 @@ export type UploadResult = {
   videoUrl?: string | null;
 };
 
-function uploadViaAppServer(
+/** Upload straight to Supabase (bypasses Vercel's ~4.5MB body limit). */
+function uploadViaSignedUrl(
   file: File,
   projectId: string,
   onProgress: (progress: number) => void
 ): Promise<UploadResult> {
-  return new Promise((resolve, reject) => {
-    const form = new FormData();
-    form.append("projectId", projectId);
-    form.append("file", file);
-
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/uploads/direct");
-    xhr.timeout = 180_000;
-
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable) return;
-      const pct = Math.min(80, Math.max(5, Math.round((event.loaded / event.total) * 80)));
-      onProgress(pct);
-    };
-
-    xhr.onload = () => {
-      let body: any = null;
-      try {
-        body = xhr.responseText ? JSON.parse(xhr.responseText) : null;
-      } catch {
-        body = null;
-      }
-      if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress(100);
-        resolve({
-          status: "transcribing",
-          videoUrl: body?.videoUrl ?? null,
-        });
+  return new Promise(async (resolve, reject) => {
+    try {
+      onProgress(5);
+      const signRes = await fetch("/api/uploads/sign", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, fileName: file.name }),
+      });
+      const signBody = await signRes.json();
+      if (!signRes.ok || !signBody.signedUrl) {
+        reject(new Error(signBody.error ?? "could not start upload"));
         return;
       }
-      reject(new Error(body?.error ?? `upload failed (${xhr.status})`));
-    };
 
-    xhr.onerror = () => reject(new Error("upload network error"));
-    xhr.ontimeout = () => reject(new Error("upload timed out — try a shorter clip or stronger connection"));
-    xhr.send(form);
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", signBody.signedUrl);
+      xhr.timeout = 300_000;
+      if (file.type) xhr.setRequestHeader("content-type", file.type);
+      xhr.setRequestHeader("x-upsert", "true");
+
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable) return;
+        // 5–90% = bytes to storage
+        const pct = Math.min(90, Math.max(5, Math.round(5 + (event.loaded / event.total) * 85)));
+        onProgress(pct);
+      };
+
+      xhr.onload = async () => {
+        if (xhr.status < 200 || xhr.status >= 300) {
+          reject(new Error(`storage upload failed (${xhr.status})`));
+          return;
+        }
+        onProgress(95);
+        try {
+          const completeRes = await fetch("/api/uploads/complete", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ projectId, path: signBody.path }),
+          });
+          const completeBody = await completeRes.json();
+          if (!completeRes.ok) {
+            reject(new Error(completeBody.error ?? "upload finalize failed"));
+            return;
+          }
+          onProgress(100);
+          resolve({
+            status: "transcribing",
+            videoUrl: completeBody.videoUrl ?? null,
+          });
+        } catch (err: any) {
+          reject(new Error(String(err?.message ?? err)));
+        }
+      };
+
+      xhr.onerror = () => reject(new Error("upload network error"));
+      xhr.ontimeout = () => reject(new Error("upload timed out — try a shorter clip or stronger connection"));
+      xhr.send(file);
+    } catch (err: any) {
+      reject(new Error(String(err?.message ?? err)));
+    }
   });
 }
 
@@ -82,7 +107,7 @@ export default function UploadDropzone({
     }
 
     try {
-      const result = await uploadViaAppServer(file, projectId, setProgress);
+      const result = await uploadViaSignedUrl(file, projectId, setProgress);
       onComplete(result);
     } catch (e: any) {
       setError(String(e?.message ?? e));

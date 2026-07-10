@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSupabase } from "@/lib/serverSupabase";
+import { BUCKET, getServerSupabase } from "@/lib/serverSupabase";
 
 export async function POST(req: Request) {
   try {
@@ -22,7 +22,13 @@ export async function POST(req: Request) {
       .eq("id", projectId);
     if (pErr) throw new Error(pErr.message);
 
-    return NextResponse.json({ assetId: asset.id, status: "transcribing" });
+    const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrl(path, 7200);
+
+    return NextResponse.json({
+      assetId: asset.id,
+      status: "transcribing",
+      videoUrl: signed?.signedUrl ?? null,
+    });
   } catch (err: any) {
     return NextResponse.json({ error: String(err?.message ?? err) }, { status: 500 });
   }
